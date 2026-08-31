@@ -153,6 +153,7 @@ async def run_loop(
 
             closes = px["closes"]
             last = px["last"]
+            src = px.get("exchange", "?")
 
             entry = strat.get("entry", {})
             rsi = _rsi(closes, int(entry.get("rsi_period", 14)))
@@ -208,6 +209,7 @@ async def run_loop(
                 {
                     "ts": _now(),
                     "asset": asset,
+                    "price_source": src,
                     "last_price": last,
                     "rsi": round(rsi, 2),
                     "in_position": position is not None,
@@ -215,6 +217,12 @@ async def run_loop(
                     "strategy_version": strat.get("version", "??"),
                     "consecutive_failures": consecutive_failures,
                 }
+            )
+            print(
+                f"{_now()}  tick {ticks}  {src}:{px.get('asset', asset)}  "
+                f"last={last:.2f}  rsi={rsi:.1f}  pos={'yes' if position else 'no'}  "
+                f"closed={closed}",
+                flush=True,
             )
             consecutive_failures = 0
 

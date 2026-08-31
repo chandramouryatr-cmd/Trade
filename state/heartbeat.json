@@ -1,1 +1,10 @@
-{ "status": "not-started", "closed_trades": 0 }
+{
+  "ts": "2026-08-31T17:14:59.351885+00:00",
+  "asset": "BTC/USDT",
+  "last_price": 78737.23,
+  "rsi": 61.54,
+  "in_position": false,
+  "closed_trades": 0,
+  "strategy_version": "01",
+  "consecutive_failures": 0
+}
