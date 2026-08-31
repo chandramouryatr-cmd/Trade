@@ -1,0 +1,75 @@
+name: hermes-trading worker
+
+# GitHub delays and sometimes coalesces scheduled runs under load — treat the
+# cadence as "about every 15-30 min", not exact. Also: scheduled workflows are
+# auto-disabled after 60 days with no repo commits.
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: hermes-trading
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore state (trades, strategy, history)
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: hermes-state-${{ github.run_id }}
+          restore-keys: |
+            hermes-state-
+
+      - name: Force goal.yaml from repo (config, not state)
+        run: git checkout HEAD -- state/goal.yaml
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run worker for a bounded window
+        run: uv run python -m hermes_trading.run --minutes 12
+
+      - name: Reflect if enough trades have closed
+        run: uv run python -m hermes_trading.reflect --fallback --if-due
+
+      - name: Show current state
+        if: always()
+        run: |
+          echo "=== heartbeat ===" && cat state/heartbeat.json || true
+          echo "=== strategy ===" && cat state/strategy.yaml || true
+          echo "=== trade count ===" && wc -l < state/trades.jsonl || true
+
+      - name: Save state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: hermes-state-${{ github.run_id }}
+
+      - name: Upload state artifact (downloadable for 7 days)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-state
+          path: state
+          retention-days: 7
+          overwrite: true

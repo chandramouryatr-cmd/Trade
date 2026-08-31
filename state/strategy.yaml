@@ -1,0 +1,9 @@
+version: "01"
+entry:
+  indicator: rsi
+  threshold: 30
+  direction: long
+  rsi_period: 14
+  exit_rsi: 70
+stop_loss_pct: 2.0
+position_size_r: 0.5
