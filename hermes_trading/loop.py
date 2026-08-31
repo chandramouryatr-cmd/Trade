@@ -32,6 +32,7 @@ TRADES = STATE / "trades.jsonl"
 HEARTBEAT = STATE / "heartbeat.json"
 STRATEGY = STATE / "strategy.yaml"
 GOAL = STATE / "goal.yaml"
+POSITION = STATE / "position.json"
 
 POLL_SECONDS = 60
 MAX_RETRIES = 3
@@ -90,13 +91,68 @@ def _write_heartbeat(row: dict[str, Any]) -> None:
 class Position:
     __slots__ = ("side", "entry", "size_r", "opened_at", "peak", "trough")
 
-    def __init__(self, side: str, entry: float, size_r: float) -> None:
+    def __init__(
+        self,
+        side: str,
+        entry: float,
+        size_r: float,
+        opened_at: str | None = None,
+        peak: float | None = None,
+        trough: float | None = None,
+    ) -> None:
         self.side = side
         self.entry = entry
         self.size_r = size_r
-        self.opened_at = _now()
-        self.peak = entry
-        self.trough = entry
+        self.opened_at = opened_at or _now()
+        self.peak = entry if peak is None else peak
+        self.trough = entry if trough is None else trough
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "side": self.side,
+            "entry": self.entry,
+            "size_r": self.size_r,
+            "opened_at": self.opened_at,
+            "peak": self.peak,
+            "trough": self.trough,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "Position":
+        return cls(
+            side=d["side"],
+            entry=float(d["entry"]),
+            size_r=float(d["size_r"]),
+            opened_at=d.get("opened_at"),
+            peak=float(d["peak"]) if d.get("peak") is not None else None,
+            trough=float(d["trough"]) if d.get("trough") is not None else None,
+        )
+
+
+def _existing_trade_count() -> int:
+    if not TRADES.exists():
+        return 0
+    return sum(1 for l in TRADES.read_text(encoding="utf-8-sig").splitlines() if l.strip())
+
+
+def _load_position() -> Position | None:
+    try:
+        raw = json.loads(POSITION.read_text(encoding="utf-8-sig"))
+    except (FileNotFoundError, ValueError):
+        return None
+    if not raw:
+        return None
+    try:
+        return Position.from_dict(raw)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _save_position(position: Position | None) -> None:
+    if position is None:
+        POSITION.write_text("null", encoding="utf-8")
+    else:
+        POSITION.write_text(json.dumps(position.to_dict(), indent=2), encoding="utf-8")
 
 
 async def run_loop(
@@ -110,10 +166,15 @@ async def run_loop(
     Actions) that can't hold a process open forever. Both None -> run forever.
     """
     consecutive_failures = 0
-    position: Position | None = None
-    closed = 0
+    position: Position | None = _load_position()
+    closed = _existing_trade_count()  # cumulative across runs, from trades.jsonl
     ticks = 0
     started_at = time.time()
+    if position is not None:
+        print(
+            f"{_now()}  resumed open {position.side} from {position.opened_at} @ {position.entry:.2f}",
+            flush=True,
+        )
     bound = []
     if max_minutes is not None:
         bound.append(f"{max_minutes:g} min")
@@ -205,6 +266,7 @@ async def run_loop(
                     )
                     position = None
 
+            _save_position(position)
             _write_heartbeat(
                 {
                     "ts": _now(),
