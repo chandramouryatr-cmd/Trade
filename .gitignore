@@ -4,3 +4,5 @@ __pycache__/
 .env
 state/.reflect_marker.json
 state/position.json
+state/market_data/
+state/backtest/

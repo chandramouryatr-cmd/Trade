@@ -122,6 +122,41 @@ def _commit(strat: dict[str, Any], hypo: dict[str, Any], mode: str) -> None:
     )
 
 
+# Hard limits on how far the fallback rule may push each variable. Without
+# these, "loosen every cycle" is a one-way ratchet: nothing ever pulls a
+# variable back, so it drifts toward an extreme (e.g. entry.threshold
+# climbing until the strategy is buying almost constantly) even though it
+# never gets closer to the goal. Bounds keep every value inside a range that
+# is still recognisably the same strategy.
+BOUNDS: dict[str, tuple[float, float]] = {
+    "entry.threshold": (20.0, 45.0),
+    "entry.exit_rsi": (55.0, 75.0),
+    "stop_loss_pct": (1.0, 4.0),
+}
+
+
+def _clip(variable: str, value: float) -> float:
+    lo, hi = BOUNDS.get(variable, (float("-inf"), float("inf")))
+    return max(lo, min(hi, value))
+
+
+def _get_path(strat: dict, dotted: str) -> float:
+    node: Any = strat
+    for key in dotted.split("."):
+        node = node.get(key, {})
+    return float(node)
+
+
+def _hypothesis(variable: str, old: float, new: float, rationale: str) -> dict[str, Any]:
+    return {
+        "variable": variable,
+        "old_value": old,
+        "new_value": new,
+        "rationale": rationale,
+        "predicted_score_direction": "up",
+    }
+
+
 def _fallback(strat: dict, goal: dict, trades: list[dict]) -> dict[str, Any] | None:
     if not trades:
         print("no closed trades yet — nothing to reflect on", flush=True)
@@ -131,28 +166,51 @@ def _fallback(strat: dict, goal: dict, trades: list[dict]) -> dict[str, Any] | N
     dd = _max_drawdown(trades)
     target = float(goal.get("target_return_30d", 0.05))
     max_dd = float(goal.get("max_drawdown", 0.08))
-    entry = strat.get("entry", {})
 
+    # 1) safety first: a drawdown breach always wins, regardless of return.
     if dd > max_dd:
-        old = float(strat.get("stop_loss_pct", 2.0))
-        return {
-            "variable": "stop_loss_pct",
-            "old_value": old,
-            "new_value": round(old - 0.2, 3),
-            "rationale": f"drawdown {dd:.2%} over max {max_dd:.2%} — tighten the stop",
-            "predicted_score_direction": "up",
-        }
-    if ret < target:
-        old = float(entry.get("threshold", 30))
-        return {
-            "variable": "entry.threshold",
-            "old_value": old,
-            "new_value": round(old + 2, 3),
-            "rationale": f"realised {ret:.2%} under target {target:.2%} — loosen entry",
-            "predicted_score_direction": "up",
-        }
+        old = _get_path(strat, "stop_loss_pct")
+        new = _clip("stop_loss_pct", round(old - 0.2, 3))
+        if new != old:
+            return _hypothesis(
+                "stop_loss_pct", old, new,
+                f"drawdown {dd:.2%} over max {max_dd:.2%} — tighten the stop",
+            )
+        print(f"drawdown {dd:.2%} over max but stop is already at its floor ({old}%) — no safer move", flush=True)
+        return None
 
-    print(f"on track (ret={ret:.2%}, dd={dd:.2%}) — no change this cycle", flush=True)
+    # 2) beating the target -> give back some looseness, get selective again.
+    # This is the reverse gear a plain "always loosen" rule never had.
+    if ret >= target:
+        old = _get_path(strat, "entry.threshold")
+        new = _clip("entry.threshold", round(old - 2, 3))
+        if new != old:
+            return _hypothesis(
+                "entry.threshold", old, new,
+                f"realised {ret:.2%} met target {target:.2%} — tighten entry, stay selective",
+            )
+        print(f"realised {ret:.2%} met target and entry is already at its tightest ({old}) — no change", flush=True)
+        return None
+
+    # 3) under target -> loosen entry, but respect the ceiling. Once capped,
+    # switch to a different lever (exit sooner) instead of getting stuck.
+    old = _get_path(strat, "entry.threshold")
+    new = _clip("entry.threshold", round(old + 2, 3))
+    if new != old:
+        return _hypothesis(
+            "entry.threshold", old, new,
+            f"realised {ret:.2%} under target {target:.2%} — loosen entry",
+        )
+
+    old_x = _get_path(strat, "entry.exit_rsi")
+    new_x = _clip("entry.exit_rsi", round(old_x - 2, 3))
+    if new_x != old_x:
+        return _hypothesis(
+            "entry.exit_rsi", old_x, new_x,
+            f"entry already at its loosest ({old}) and still under target — take profit a bit earlier instead",
+        )
+
+    print(f"realised {ret:.2%} under target but entry and exit are both at their limits — no safe move left", flush=True)
     return None
 
 

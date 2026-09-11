@@ -32,6 +32,31 @@ uv run python -m hermes_trading.run                # forever
 uv run python -m hermes_trading.reflect --fallback # force one reflection
 ```
 
+## Backtesting
+
+`hermes_trading/strategy_engine.py` holds the indicator math and entry/exit
+rules shared by the live loop and the backtester, so the two can never
+silently disagree.
+
+```bash
+uv run python -m hermes_trading.backtest --compare
+```
+
+Pulls ~2 years of hourly BTC candles (yfinance, cached under
+`state/market_data/`, gitignored), splits them into an older TRAIN slice and
+a newer CHECK slice, searches a small grid on TRAIN only, and reports both
+the current live rule and the searched rule on the CHECK slice they never
+saw. Writes `state/backtest/summary.json` (also gitignored — regenerate any
+time). Finding: neither beat the goal on unseen data — see the conversation
+history for the honest read.
+
+### The reflection rule has bounds, not an open-ended ratchet
+
+`reflect.py --fallback` clips every variable it can touch to a `BOUNDS`
+range (e.g. `entry.threshold` stays within 20-45) and can move a value
+*back* when the strategy is actually meeting the return target, not just
+loosen forever. See `BOUNDS` and `_fallback` in `hermes_trading/reflect.py`.
+
 ## Hosting (free, via GitHub Actions)
 
 `.github/workflows/trade.yml` runs the worker on a schedule (~every 15-30 min),
