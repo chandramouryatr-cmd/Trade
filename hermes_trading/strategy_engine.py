@@ -119,6 +119,96 @@ def migrate_strategy(strat: dict) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# price action — reading the shape of candles, not just an indicator number
+# --------------------------------------------------------------------------- #
+def support_resistance_last(highs, lows, lookback: int = 50) -> tuple[float, float]:
+    """(support, resistance) = (lowest low, highest high) over the last
+    `lookback` CLOSED candles — the current candle is excluded, so a level
+    can't be "set" by the very bar being evaluated against it."""
+    h = np.asarray(highs, dtype=float)
+    l = np.asarray(lows, dtype=float)
+    if h.size < 2:
+        return float(l[-1]), float(h[-1])
+    window = min(lookback, h.size - 1)
+    return float(l[-1 - window : -1].min()), float(h[-1 - window : -1].max())
+
+
+def candle_anatomy(o: float, h: float, l: float, c: float) -> dict:
+    """Break one candle into body vs. wicks, each as a fraction of its full
+    range. A big lower_wick_pct means price dipped hard and was bought back
+    up before the close; a big upper_wick_pct means the opposite."""
+    rng = max(h - l, 1e-9)
+    body = abs(c - o)
+    upper = h - max(o, c)
+    lower = min(o, c) - l
+    return {
+        "range": rng,
+        "body": body,
+        "upper_wick": upper,
+        "lower_wick": lower,
+        "body_pct": body / rng,
+        "upper_wick_pct": upper / rng,
+        "lower_wick_pct": lower / rng,
+    }
+
+
+def rejection_wick(o: float, h: float, l: float, c: float, min_ratio: float = 2.0) -> str | None:
+    """'bullish' if the lower wick dwarfs the body (buyers stepped in and
+    defended the low), 'bearish' if the upper wick dwarfs the body (sellers
+    defended the high), else None. `min_ratio` = how many times bigger the
+    wick must be than the body to count as a real rejection, not noise."""
+    a = candle_anatomy(o, h, l, c)
+    body = max(a["body"], 1e-9)
+    if a["lower_wick"] >= min_ratio * body and a["lower_wick"] > a["upper_wick"]:
+        return "bullish"
+    if a["upper_wick"] >= min_ratio * body and a["upper_wick"] > a["lower_wick"]:
+        return "bearish"
+    return None
+
+
+def swing_points(highs, lows, left: int = 2, right: int = 2) -> tuple[np.ndarray, np.ndarray]:
+    """Mark swing highs/lows: candle i is a swing high if its high is the
+    highest within `left` bars before and `right` bars after it (symmetric
+    for swing lows). The last `right` candles can never be confirmed yet —
+    that lag is realistic, not a bug: you cannot know a swing point exists
+    until price has moved away from it on both sides."""
+    h = np.asarray(highs, dtype=float)
+    l = np.asarray(lows, dtype=float)
+    n = h.size
+    is_high = np.zeros(n, dtype=bool)
+    is_low = np.zeros(n, dtype=bool)
+    for i in range(left, n - right):
+        if h[i] == h[i - left : i + right + 1].max():
+            is_high[i] = True
+        if l[i] == l[i - left : i + right + 1].min():
+            is_low[i] = True
+    return is_high, is_low
+
+
+def trend_now(highs, lows, left: int = 2, right: int = 2, lookback: int = 60) -> str:
+    """'up' if the last two confirmed swing highs AND the last two confirmed
+    swing lows are both rising; 'down' if both are falling; else 'sideways'
+    (includes "not enough structure yet"). This is the textbook
+    higher-highs/higher-lows definition of a trend, not a moving average."""
+    h = np.asarray(highs, dtype=float)[-lookback:]
+    l = np.asarray(lows, dtype=float)[-lookback:]
+    is_high, is_low = swing_points(h, l, left, right)
+    hi_idx = np.where(is_high)[0]
+    lo_idx = np.where(is_low)[0]
+    if hi_idx.size < 2 or lo_idx.size < 2:
+        return "sideways"
+    higher_highs = h[hi_idx[-1]] > h[hi_idx[-2]]
+    higher_lows = l[lo_idx[-1]] > l[lo_idx[-2]]
+    lower_highs = h[hi_idx[-1]] < h[hi_idx[-2]]
+    lower_lows = l[lo_idx[-1]] < l[lo_idx[-2]]
+    if higher_highs and higher_lows:
+        return "up"
+    if lower_highs and lower_lows:
+        return "down"
+    return "sideways"
+
+
+# --------------------------------------------------------------------------- #
 # signals  (long-only for now)
 # --------------------------------------------------------------------------- #
 def entry_ok(cfg: dict, price: float, rsi_val: float, sma_val: float | None) -> bool:
