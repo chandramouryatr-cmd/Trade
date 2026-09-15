@@ -20,6 +20,7 @@ from typing import Any
 
 import yaml
 
+from . import strategy_engine as se
 from .score import _max_drawdown, _realised_return, score
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -130,8 +131,8 @@ def _commit(strat: dict[str, Any], hypo: dict[str, Any], mode: str) -> None:
 # is still recognisably the same strategy.
 BOUNDS: dict[str, tuple[float, float]] = {
     "entry.threshold": (20.0, 45.0),
-    "entry.exit_rsi": (55.0, 75.0),
-    "stop_loss_pct": (1.0, 4.0),
+    "exit.rsi_exit": (55.0, 75.0),
+    "exit.stop.fixed_pct": (1.0, 4.0),
 }
 
 
@@ -169,11 +170,11 @@ def _fallback(strat: dict, goal: dict, trades: list[dict]) -> dict[str, Any] | N
 
     # 1) safety first: a drawdown breach always wins, regardless of return.
     if dd > max_dd:
-        old = _get_path(strat, "stop_loss_pct")
-        new = _clip("stop_loss_pct", round(old - 0.2, 3))
+        old = _get_path(strat, "exit.stop.fixed_pct")
+        new = _clip("exit.stop.fixed_pct", round(old - 0.2, 3))
         if new != old:
             return _hypothesis(
-                "stop_loss_pct", old, new,
+                "exit.stop.fixed_pct", old, new,
                 f"drawdown {dd:.2%} over max {max_dd:.2%} — tighten the stop",
             )
         print(f"drawdown {dd:.2%} over max but stop is already at its floor ({old}%) — no safer move", flush=True)
@@ -202,11 +203,11 @@ def _fallback(strat: dict, goal: dict, trades: list[dict]) -> dict[str, Any] | N
             f"realised {ret:.2%} under target {target:.2%} — loosen entry",
         )
 
-    old_x = _get_path(strat, "entry.exit_rsi")
-    new_x = _clip("entry.exit_rsi", round(old_x - 2, 3))
+    old_x = _get_path(strat, "exit.rsi_exit")
+    new_x = _clip("exit.rsi_exit", round(old_x - 2, 3))
     if new_x != old_x:
         return _hypothesis(
-            "entry.exit_rsi", old_x, new_x,
+            "exit.rsi_exit", old_x, new_x,
             f"entry already at its loosest ({old}) and still under target — take profit a bit earlier instead",
         )
 
@@ -284,7 +285,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    strat = _load_yaml(STRATEGY)
+    strat = se.migrate_strategy(_load_yaml(STRATEGY))
     goal = _load_yaml(GOAL)
 
     if args.if_due:

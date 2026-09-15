@@ -2,7 +2,9 @@
 
 Every minute:
   * pull price (required) + onchain/news/macro context (best-effort) via adapters
-  * evaluate the strategy in state/strategy.yaml (RSI entry, stop-loss / RSI exit)
+  * evaluate the strategy in state/strategy.yaml using the full OHLC candles
+    (close for RSI, high/low for ATR if the stop is set to "atr") via
+    strategy_engine — the same signal code the backtester uses
   * open or close a single paper position
   * append every closed trade to state/trades.jsonl
   * write state/heartbeat.json
@@ -23,6 +25,7 @@ from typing import Any, Callable, Coroutine
 
 import yaml
 
+from . import strategy_engine as se
 from .adapters import macro, news, onchain, price
 from .adapters.price import SchemaError as PriceSchemaError
 
@@ -45,22 +48,6 @@ def _now() -> str:
 
 def _load_yaml(path: Path) -> dict[str, Any]:
     return yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
-
-
-def _rsi(closes: list[float], period: int = 14) -> float:
-    if len(closes) < period + 1:
-        return 50.0
-    gains, losses = [], []
-    for a, b in zip(closes[-period - 1 : -1], closes[-period:]):
-        diff = b - a
-        gains.append(max(diff, 0.0))
-        losses.append(max(-diff, 0.0))
-    avg_gain = sum(gains) / period
-    avg_loss = sum(losses) / period
-    if avg_loss == 0:
-        return 100.0
-    rs = avg_gain / avg_loss
-    return 100.0 - 100.0 / (1.0 + rs)
 
 
 async def _with_retries(factory: Callable[[], Coroutine[Any, Any, Any]], name: str) -> Any:
@@ -196,7 +183,7 @@ async def run_loop(
         ticks += 1
         tick_started = time.time()
         try:
-            strat = _load_yaml(STRATEGY)
+            strat = se.migrate_strategy(_load_yaml(STRATEGY))
             goal = _load_yaml(GOAL)
 
             px = await _with_retries(lambda: price.fetch(asset, "1m", 200), "price")
@@ -212,38 +199,41 @@ async def run_loop(
                 except Exception as exc:  # noqa: BLE001 - context is best-effort
                     context[key] = {"error": str(exc)}
 
+            # full OHLC, not just the close — the same candles feed both the
+            # live loop and the backtester now, via strategy_engine
             closes = px["closes"]
+            highs = [c["high"] for c in px["candles"]]
+            lows = [c["low"] for c in px["candles"]]
             last = px["last"]
             src = px.get("exchange", "?")
 
-            entry = strat.get("entry", {})
-            rsi = _rsi(closes, int(entry.get("rsi_period", 14)))
-            threshold = float(entry.get("threshold", 30))
-            direction = entry.get("direction", "long")
-            exit_rsi = float(entry.get("exit_rsi", 70))
-            stop_pct = float(strat.get("stop_loss_pct", 2.0))
+            entry_cfg = strat.get("entry", {})
+            exit_cfg = strat.get("exit", {})
+            rsi_period = int(entry_cfg.get("rsi_period", 14))
             size_r = float(strat.get("position_size_r", 0.5))
 
+            rsi = se.rsi_last(closes, rsi_period)
+            sma_val = (
+                se.sma_last(closes, int(entry_cfg.get("trend_filter", {}).get("sma_period", 200)))
+                if entry_cfg.get("trend_filter", {}).get("enabled", False)
+                else None
+            )
+            atr_val = (
+                se.atr_last(highs, lows, closes, int(exit_cfg.get("stop", {}).get("atr_period", 14)))
+                if exit_cfg.get("stop", {}).get("method") == "atr"
+                else None
+            )
+
             if position is None:
-                fire = (direction == "long" and rsi <= threshold) or (
-                    direction == "short" and rsi >= 100 - threshold
-                )
-                if fire:
-                    position = Position(direction, last, size_r)
-                    print(f"{_now()}  OPEN  {direction} @ {last:.2f}  rsi={rsi:.1f}", flush=True)
+                if se.entry_ok(strat, last, rsi, sma_val):
+                    position = Position(entry_cfg.get("direction", "long"), last, size_r)
+                    print(f"{_now()}  OPEN  {position.side} @ {last:.2f}  rsi={rsi:.1f}", flush=True)
             else:
                 position.peak = max(position.peak, last)
                 position.trough = min(position.trough, last)
-                if position.side == "long":
+                hit, reason = se.exit_check(strat, last, position.entry, rsi, atr_val)
+                if hit:
                     move = (last - position.entry) / position.entry
-                    stop_hit = last <= position.entry * (1 - stop_pct / 100)
-                    tp_hit = rsi >= exit_rsi
-                else:
-                    move = (position.entry - last) / position.entry
-                    stop_hit = last >= position.entry * (1 + stop_pct / 100)
-                    tp_hit = rsi <= 100 - exit_rsi
-
-                if stop_hit or tp_hit:
                     ret_pct = move * 100 * position.size_r
                     row = {
                         "ts": _now(),
@@ -252,7 +242,7 @@ async def run_loop(
                         "entry": position.entry,
                         "exit": last,
                         "return_pct": round(ret_pct, 4),
-                        "reason": "stop_loss" if stop_hit else "take_profit",
+                        "reason": reason,
                         "rsi_exit": round(rsi, 2),
                         "strategy_version": strat.get("version", "??"),
                         "opened_at": position.opened_at,

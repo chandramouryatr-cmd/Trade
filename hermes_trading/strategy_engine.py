@@ -86,6 +86,39 @@ def atr_last(highs, lows, closes, period: int = 14) -> float | None:
 
 
 # --------------------------------------------------------------------------- #
+# strategy shape
+# --------------------------------------------------------------------------- #
+def migrate_strategy(strat: dict) -> dict:
+    """Upgrade an old flat strategy.yaml (threshold/exit_rsi/stop_loss_pct at
+    the top level, no `exit` block) to the richer shape this module expects
+    (a `exit.stop` block, an `entry.trend_filter` block). Values carry over
+    unchanged; this only reshapes the dict. Safe to call on an
+    already-migrated strategy — it is left untouched."""
+    if "exit" in strat:
+        return strat
+
+    entry = dict(strat.get("entry", {}))
+    exit_rsi = entry.pop("exit_rsi", 70)
+    entry.setdefault("trend_filter", {"enabled": False, "sma_period": 200})
+
+    return {
+        "version": strat.get("version", "01"),
+        "entry": entry,
+        "exit": {
+            "rsi_exit": exit_rsi,
+            "take_profit_pct": None,
+            "stop": {
+                "method": "fixed",
+                "fixed_pct": float(strat.get("stop_loss_pct", 2.0)),
+                "atr_period": 14,
+                "atr_mult": 2.5,
+            },
+        },
+        "position_size_r": strat.get("position_size_r", 0.5),
+    }
+
+
+# --------------------------------------------------------------------------- #
 # signals  (long-only for now)
 # --------------------------------------------------------------------------- #
 def entry_ok(cfg: dict, price: float, rsi_val: float, sma_val: float | None) -> bool:
