@@ -5,3 +5,6 @@ min_sharpe:        1.2      # quality bar
 failure_below:     -0.04    # score floor — steeply negative below this
 reflection_every:  5        # cycle cadence
 one_variable_only: true     # scientific-method guardrail
+costs:                      # paper trades pay these, so results aren't flattered
+  fee_pct_each_way: 0.10      # exchange fee per side, % of traded amount
+  slippage_pct_each_way: 0.03 # worse-than-screen fill per side, % of traded amount

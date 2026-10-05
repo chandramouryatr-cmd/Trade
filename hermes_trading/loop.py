@@ -25,6 +25,7 @@ from typing import Any, Callable, Coroutine
 
 import yaml
 
+from . import costs
 from . import strategy_engine as se
 from .adapters import macro, news, onchain, price
 from .adapters.price import SchemaError as PriceSchemaError
@@ -235,13 +236,17 @@ async def run_loop(
                 if hit:
                     move = (last - position.entry) / position.entry
                     ret_pct = move * 100 * position.size_r
+                    trade_cost = costs.cost_pct(position.size_r)
                     row = {
                         "ts": _now(),
                         "asset": asset,
                         "side": position.side,
                         "entry": position.entry,
                         "exit": last,
+                        "size_r": position.size_r,
                         "return_pct": round(ret_pct, 4),
+                        "cost_pct": round(trade_cost, 4),
+                        "net_return_pct": round(ret_pct - trade_cost, 4),
                         "reason": reason,
                         "rsi_exit": round(rsi, 2),
                         "strategy_version": strat.get("version", "??"),
@@ -251,7 +256,8 @@ async def run_loop(
                     closed += 1
                     print(
                         f"{_now()}  CLOSE {position.side} @ {last:.2f}  "
-                        f"ret={ret_pct:+.2f}%  ({row['reason']})  total_closed={closed}",
+                        f"gross={ret_pct:+.2f}%  net={row['net_return_pct']:+.2f}%  "
+                        f"({row['reason']})  total_closed={closed}",
                         flush=True,
                     )
                     position = None

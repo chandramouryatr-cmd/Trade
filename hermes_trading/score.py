@@ -10,12 +10,15 @@ from __future__ import annotations
 import math
 from typing import Any, Mapping, Sequence
 
+from .costs import net_return_pct
+
 
 def _realised_return(trades: Sequence[Mapping[str, Any]]) -> float:
-    """Compound the per-trade returns. `return_pct` is a percent, e.g. 1.5 == +1.5%."""
+    """Compound the per-trade returns AFTER fees and slippage (see costs.py).
+    Values are percents, e.g. 1.5 == +1.5%."""
     equity = 1.0
     for t in trades:
-        equity *= 1.0 + float(t.get("return_pct", 0.0)) / 100.0
+        equity *= 1.0 + net_return_pct(t) / 100.0
     return equity - 1.0
 
 
@@ -24,7 +27,7 @@ def _max_drawdown(trades: Sequence[Mapping[str, Any]]) -> float:
     equity = peak = 1.0
     worst = 0.0
     for t in trades:
-        equity *= 1.0 + float(t.get("return_pct", 0.0)) / 100.0
+        equity *= 1.0 + net_return_pct(t) / 100.0
         peak = max(peak, equity)
         worst = min(worst, equity / peak - 1.0)
     return abs(worst)
@@ -32,7 +35,7 @@ def _max_drawdown(trades: Sequence[Mapping[str, Any]]) -> float:
 
 def _sharpe(trades: Sequence[Mapping[str, Any]]) -> float:
     """Per-batch Sharpe: mean/stdev of trade returns, scaled by sqrt(n)."""
-    rs = [float(t.get("return_pct", 0.0)) / 100.0 for t in trades]
+    rs = [net_return_pct(t) / 100.0 for t in trades]
     if len(rs) < 2:
         return 0.0
     mean = sum(rs) / len(rs)
